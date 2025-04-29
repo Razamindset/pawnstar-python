@@ -1,0 +1,34 @@
+# Python-related
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+venv/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependency directories
+.env/
+*.egg-info/
+
+# Test and coverage
+.coverage
+nosetests.xml
+pytest.xml
+*.cover
+*.log
+*.bak
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+#  PyInstaller creates a dist/ directory with executable files, which should not be included in the repo.
+dist/
+build/
+*.spec
