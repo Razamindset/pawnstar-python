@@ -1,4 +1,20 @@
 import chess
+from enum import Enum
+
+import chess.polyglot
+
+class NodeType(Enum):
+    EXACT = 0
+    UPPER_BOUND = 1
+    LOWER_BOUND = 2
+
+class TTEntry():
+    def __init__(self, hash_key, depth, score, node_type, best_move):
+        self.hash_key = hash_key    # Position hash
+        self.depth = depth          # Search depth
+        self.score = score          # Position score
+        self.node_type = node_type  # Type of node (EXACT, UPPERBOUND, LOWERBOUND)
+        self.best_move = best_move  # Best move found
 
 MATE_SCORE = 1000000
 
@@ -77,6 +93,8 @@ class Engine():
         self.board = chess.Board()
         self.nodes_searched = 0
         self.transposition_table = {}
+        self.tt_size = 1000000
+        self.tt_hits = 0
         pass
 
     def set_fen(self, fen:str):
@@ -173,47 +191,50 @@ class Engine():
         moves = list(self.board.legal_moves)
         moves.sort(key=lambda move: -self.score_move(move))
         return moves
-    
-    def quiescence(self, alpha, beta, ply=0):
-        self.nodes_searched +=1
 
-        stand_pat = self.evaluate(ply)
-
-        # In a perfect the opponent won't allow this
-        if stand_pat >= beta:
-            return beta
-
-        if alpha < stand_pat:
-            alpha = stand_pat
-        
-        for move in self.board.legal_moves:
-            if not self.board.is_capture(move):
-                continue
-                
-            self.board.push(move)
-            score = -self.quiescence(-beta, -alpha, ply + 1)
-            self.board.pop
-
-            if score >= beta:
-                return beta
-            if score > alpha:
-                alpha = score
+    def store_position(self, hash_key, depth, score, node_type, best_move):
+        """Store position in transposition table with simple size management"""
+        if len(self.transposition_table) >= self.tt_size:
+            # Simple replacement: remove a random entry
+            self.transposition_table.pop(next(iter(self.transposition_table)))
             
-        return alpha
+        self.transposition_table[hash_key] = TTEntry(
+            hash_key, depth, score, node_type, best_move
+        )
 
-    
     def minmax(self, depth, alpha, beta, maximizing_player, ply=0):
         self.nodes_searched += 1
-        
-        # Todo Null move pruning
 
+        alpha_orig = alpha
+        
         if(depth == 0 or self.board.is_game_over()):
             return  self.evaluate(ply), []
+
+        # Search the table 
+        pos_hash = chess.polyglot.zobrist_hash(self.board)
+
+        tt_entry = self.transposition_table.get(pos_hash)
+
+        # I have partially understood the upperbound and lower bound logic
+        if tt_entry and tt_entry.depth >= depth:
+            self.tt_hits +=1
+            if tt_entry.node_type == NodeType.EXACT:
+                return tt_entry.score, [tt_entry.best_move]
+            elif tt_entry.node_type == NodeType.LOWER_BOUND:
+                alpha = max(alpha, tt_entry.score)
+            elif tt_entry.node_type == NodeType.UPPER_BOUND:
+                beta = min(beta, tt_entry.score)
+            
+            if alpha >= beta:
+                return tt_entry.score, [tt_entry.best_move]
+
+
 
         # Alpha is the best eval so far for the maximizing player
         if maximizing_player:
             max_eval = -float('inf')
             best_line = []
+            best_move = None
 
             for move in self.ordered_moves():
                 self.board.push(move)
@@ -224,12 +245,22 @@ class Engine():
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move.uci()] + line
+                    best_move = move
 
                 alpha = max(max_eval, alpha) # This will update the best eval so far if possible
 
-                # If beta goes negative it means the other player is winning so we will not make such move and prune the branch
+                #* If at any point the score returned by the minimizing player is greater than or equal to beta, the maximizing player knows that the minimizing player will avoid this branch, so it can stop exploring further down this path (beta cutoff). Means there is a better move somewhere else for black
                 if beta <= alpha:
                     break
+            # Determine node type and store in transposition table
+            node_type = NodeType.EXACT
+            if max_eval <= alpha_orig:
+                node_type = NodeType.UPPER_BOUND
+            elif max_eval >= beta:
+                node_type = NodeType.LOWER_BOUND
+
+            # Store position in transposition table
+            self.store_position(pos_hash, depth, max_eval, node_type, best_move)
 
             return max_eval, best_line
             
@@ -237,6 +268,7 @@ class Engine():
         else:
             min_eval = float('inf')
             best_line = []
+            best_move = None
             for move in self.ordered_moves():
                 self.board.push(move)
                 eval, line = self.minmax(depth -1, alpha, beta, True, ply + 1)
@@ -246,12 +278,23 @@ class Engine():
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move.uci()] + line
+                    best_move = move
 
                 beta = min(min_eval, beta) # Minimizing player wants the lowest value
 
-                # If value gets in favor of maximizing player prune the branch
+                # If at any point the score returned by the maximizing player is less than or equal to alpha, the minimizing player knows that the maximizing player will avoid this branch, so it can stop exploring further down this path (alpha cutoff).
                 if alpha >= beta:
                     break
+            
+            # Determine node type and store in transposition table
+            node_type = NodeType.EXACT
+            if min_eval <= alpha_orig:
+                node_type = NodeType.UPPER_BOUND
+            elif min_eval >= beta:
+                node_type = NodeType.LOWER_BOUND
+
+            # Store position in transposition table
+            self.store_position(pos_hash, depth, min_eval, node_type, best_move)
             
             return min_eval, best_line
 
@@ -260,9 +303,7 @@ class Engine():
     def search(self, depth):
         """Do simple search for now"""
 
-        # print(self.evaluate())
-
-        # If white to move best score is the worst that can happen so any other move will be evaluated greator than that
+        # If white to move best score is the worst that can happen so any other move will be evaluated greater than that
         best_score = -float('inf') if self.board.turn == chess.WHITE else float('inf')
         best_move = None
         best_line = []
@@ -288,16 +329,12 @@ class Engine():
 
         # print("Nodes Searched: ", self.nodes_searched)
 
-        # mate_In = MATE_SCORE + best_score if self.board.turn == chess.BLACK else MATE_SCORE - best_score 
-        # if(mate_In <=  2*depth):
-        #     print("Mate IN: ", mate_In)
-        #     print("Mate IN: ", mate_In)
-
         if abs(best_score) > 900_000:
             mate_in = (MATE_SCORE - best_score) // 2 if self.board.turn == chess.WHITE else (MATE_SCORE + best_score) // 2
             print(f"info depth {depth} score mate {mate_in} pv {' '.join(best_line)}")
         else:
             print(f"info depth {depth} score cp {best_score} pv {' '.join(best_line)}")
 
+        print("tt hits: ", self.tt_hits)
 
         return best_move.uci() if best_move else None
