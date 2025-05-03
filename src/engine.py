@@ -68,6 +68,16 @@ pst = {
            -47, -42, -43, -79, -64, -32, -29, -32,
             -4,   3, -14, -50, -57, -18,  13,   4,
             17,  30,  -3, -14,   6,  -1,  40,  18),
+    'KE' : (
+        -50, -40, -30, -20, -20, -30, -40, -50,
+        -30, -20, -10, 0,   0, -10, -20, -30,
+        -30, -10, 20,  30,  30,  20,  -10, -30,
+        -30, -10, 30,  40,  40,  30,  -10, -30,
+        -30, -10, 30,  40,  40,  30,  -10, -30,
+        -30, -10, 20,  30,  30,  20,  -10, -30,
+        -30, -30, 0,   0, 0,   0,   -30, -30,
+        -50, -30, -30, -30, -30, -30, -30, -50)
+
 }
 
 # Create mirrored tables for black pieces
@@ -122,16 +132,85 @@ class Engine():
         }
         return values[piece.piece_type] if piece.color == chess.WHITE else -values[piece.piece_type]
     
-    def get_piece_position_score(self, piece, square):
-        """Get the position score for a piece on a square."""
-        piece_type = piece_to_pst[piece.piece_type]
+    def is_endgame(self):
+        """Check if we're in an endgame position"""
+        white_queens = len(self.board.pieces(chess.QUEEN, chess.WHITE))
+        black_queens = len(self.board.pieces(chess.QUEEN, chess.BLACK))
+        white_minors = len(self.board.pieces(chess.KNIGHT, chess.WHITE)) + \
+                    len(self.board.pieces(chess.BISHOP, chess.WHITE))
+        black_minors = len(self.board.pieces(chess.KNIGHT, chess.BLACK)) + \
+                    len(self.board.pieces(chess.BISHOP, chess.BLACK))
         
-        # Adjust square index for black pieces (mirror vertically)
+        return white_queens + black_queens <= 1 and white_minors <= 2 and black_minors <= 2
+
+    def can_apply_null_move(self):
+        """Determine if it's safe to apply null move"""
+        # Don't use null move if:
+        # 1. In check
+        # 2. In endgame
+        # 3. Side to move has very few pieces (risk of zugzwang)
+        return not (self.board.is_check() or self.is_endgame())
+
+    def get_piece_position_score(self, piece, square, is_endgame):
+        """Get the position score for a piece on a square."""
+        # For white we are getting smaller numbers ie R on 0 so we flip it
+        piece_symbol = piece_to_pst[piece.piece_type]
+
+        # print(piece, piece.color, square)
+
+        # If endgame we will serach the endgame table instead
+        if is_endgame and piece == chess.KING:
+            piece_symbol += "E"
+
         if piece.color == chess.WHITE:
-            return pst_mirrored[piece_type.lower()][square]
+            return pst[piece_symbol][63-square]
         else:
-            # For black pieces, we need to flip the square vertically
-            return -pst[piece_type][square]
+            # For black pieces, we can trust the table return negative score as white score is +ive
+            return -pst[piece_symbol][square]
+
+    def king_endgame_score(self, white_king_sq, black_king_sq, our_color, op_color):
+        """In the endgame the engine should prefer pusshing the opponent king to the side of the board and bring its King closer so it can checkmate"""
+        score = 0
+
+        # There are 4 ccorners on the board
+        corners = [0, 7, 63, 56]
+
+        black_on_corner = black_king_sq in corners
+        white_on_corner = white_king_sq in corners
+        
+        # *There are 4 sides taht correspond to 4 sides
+        # Following numbers represent the piece positions on the sides of the board: the top and bottom rank and the left and right sides if the enemy is in this territory then we are in buisness
+        files = [
+                0, 1, 2, 3, 4, 5, 6, 7,
+                8,                   15,
+                16,                  23,
+                24,                  31,
+                32,                  39,
+                40,                  47,
+                48,                  55,
+                56, 57, 58, 59, 60, 61, 62, 63
+                ]
+
+        black_on_side = black_king_sq in files
+        white_on_side = white_king_sq in files
+
+        if our_color == chess.WHITE:
+            if black_on_corner:
+                score += 30
+            if black_on_side:
+                score += 50
+
+        if our_color == chess.BLACK:
+            if white_on_corner:
+                score += 30
+            if white_on_side:
+                score += 50
+        
+        # Todo:- Find the correct wayt o calculate manhatan distance
+        # distance = abs(black_king_sq - white_king_sq)
+        # score += (64-distance) *6
+
+        return score
 
     def evaluate(self, ply=0):
         """Evaluate based on material difference, mate, and draw"""
@@ -152,28 +231,66 @@ class Engine():
             return 0  
     
         score = 0
-        
-        # Evaluate material and piece positioning
-        for square, piece in self.board.piece_map().items():
-            # Add material value
-            score += self.piece_value(piece)
-            
-            # Add position value
-            pos_score = self.get_piece_position_score(piece, square)
 
-            score += pos_score
+        white_king_sq = None
+        black_king_sq = None
+
+        # ! testing faster move generateion
+        # Pieces cache
+        white_pieces = self.board.occupied_co[chess.WHITE]
+        black_pieces = self.board.occupied_co[chess.BLACK]
+
+        is_endgame = self.is_endgame()
         
+        # Evaluate White pieces
+        for square in chess.scan_forward(white_pieces):
+            piece = self.board.piece_at(square)
+            score += self.piece_value(piece)
+            score += self.get_piece_position_score(piece, square, is_endgame)
+
+            if(piece.piece_type == chess.KING):
+                white_king_sq = square
+           
+        
+        # Evaluate black pieces
+        for square in chess.scan_forward(black_pieces):
+            piece = self.board.piece_at(square)
+            score += self.piece_value(piece)
+            score += self.get_piece_position_score(piece, square, is_endgame)
+
+            # This will be used later for manhattan distance
+            if(piece.piece_type == chess.KING):
+                black_king_sq = square
+        
+        # * manhattan distance
+        if is_endgame:
+            # First calculate as our side is white and op is black and add
+            # Calculate as our side is black ans op is white and add -ive of that
+            end_game_score = self.king_endgame_score(white_king_sq, black_king_sq, chess.WHITE, chess.BLACK)
+            - self.king_endgame_score(white_king_sq, black_king_sq, chess.BLACK, chess.WHITE)
+
+            print(self.board, end_game_score)
+
+            score += end_game_score
+
+        # Todo add pos based eval like open files and pawns bishop pair etc
+            
         return score
     
-    def score_move(self, move):
+    def score_move(self, move, tt_move=None):
         """Scores for moves, The higher the better"""
+
+        # TT move gets highest priority
+        if tt_move and move.uci() == tt_move:
+            return 30000
+
         # Captues, promotion and then checks ->
         if self.board.is_capture(move):
-            captured = self.board.piece_at(move.to_square)
+            victim = self.board.piece_at(move.to_square)
             attacker = self.board.piece_at(move.from_square)
-            if captured and attacker:
+            if victim and attacker:
                 # _ is numerical literal has no affect on value
-                return 10_000 + self.piece_value(captured) - self.piece_value(attacker)
+                return 10_000 +10000 + (abs(self.piece_value(victim)) * 10 - abs(self.piece_value(attacker)))
         
         if move.promotion:
             return 9_000 + (self.piece_value(chess.Piece(move.promotion, self.board.turn)))
@@ -185,37 +302,112 @@ class Engine():
         # Else it is quiet move 
         return 0
 
-    
     def ordered_moves(self):
         """Orders Moves based on priority"""
-        moves = list(self.board.legal_moves)
-        moves.sort(key=lambda move: -self.score_move(move))
-        return moves
-
-    def store_position(self, hash_key, depth, score, node_type, best_move):
-        """Store position in transposition table with simple size management"""
-        if len(self.transposition_table) >= self.tt_size:
-            # Simple replacement: remove a random entry
-            self.transposition_table.pop(next(iter(self.transposition_table)))
-            
-        self.transposition_table[hash_key] = TTEntry(
-            hash_key, depth, score, node_type, best_move
-        )
-
-    def minmax(self, depth, alpha, beta, maximizing_player, ply=0):
-        self.nodes_searched += 1
-
-        alpha_orig = alpha
-        
-        if(depth == 0 or self.board.is_game_over()):
-            return  self.evaluate(ply), []
 
         # Search the table 
         pos_hash = chess.polyglot.zobrist_hash(self.board)
 
         tt_entry = self.transposition_table.get(pos_hash)
+        tt_move = None
+
+        if(tt_entry):
+            tt_move = tt_entry.best_move
+
+        moves = list(self.board.legal_moves)
+        moves.sort(key=lambda move: -self.score_move(move, tt_move))
+        return moves
+
+    def store_position(self, hash_key, depth, score, node_type, best_move):
+        """Store position in transposition table with simple size management"""
+        if len(self.transposition_table) >= self.tt_size:
+            # Remove the shalowest entry
+            min_depth = float('inf')
+            oldest_key = None
+            for key, entry in self.transposition_table.items():
+                if entry.depth < min_depth:
+                    min_depth = entry.depth
+                    oldest_key = key
+
+            if oldest_key:
+                self.transposition_table.pop(oldest_key)
+            
+        self.transposition_table[hash_key] = TTEntry(
+            hash_key, depth, score, node_type, best_move
+        )
+
+    def quiescence(self, alpha, beta, depth=0, max_depth=10, ply=0):
+        """Quiescence search to evaluate tactical sequences"""
+        self.nodes_searched += 1
+
+        stand_pat  = self.evaluate()
+
+        if stand_pat >= beta:
+            return beta
+        
+         # Update alpha if standing pat is better
+        if stand_pat > alpha:
+            alpha = stand_pat
+        
+        # Stop if we've gone too deep
+        # if depth >= max_depth:
+        #     return alpha
+        
+        # Loop through legal moves captures only
+        for move in self.ordered_moves():
+            if not self.board.is_capture(move):
+                continue
+
+            # Get pieces involved
+            victim = self.board.piece_at(move.to_square)
+            attacker = self.board.piece_at(move.from_square)
+    
+            if not victim or not attacker:
+                continue
+        
+            # Simple material comparison
+            # Could be enhanced with more sophisticated SEE
+            victim_value = abs(self.piece_value(victim))
+            attacker_value = abs(self.piece_value(attacker))
+    
+            # Only search if we're not losing material
+            # or capturing with pawn
+            if victim_value < attacker_value and attacker.piece_type != chess.PAWN:
+                continue
+
+            # Delta Pruning
+            if stand_pat + victim_value + 200 < alpha:
+                continue
+            
+            self.board.push(move)
+            score = -self.quiescence(-beta, -alpha, depth + 1, max_depth, ply+1)
+            self.board.pop()
+        
+            if score >= beta:
+                return beta
+            
+            if score > alpha:
+                alpha = score
+            
+        return alpha
+
+    # ! I am trying a lot of things but the engine's speed is not improving there is sure some major bottle neck
+    def minmax(self, depth, alpha, beta, maximizing_player, ply=0, allow_null=True):
+        self.nodes_searched += 1
+
+        alpha_orig = alpha
+        
+        if(depth == 0 or self.board.is_game_over()):
+            # return  self.quiescence(alpha, beta, ply=ply), []
+            return  self.evaluate(ply), []
+
+        # Search the table 
+        pos_hash = chess.polyglot.zobrist_hash(self.board)
+        tt_entry = self.transposition_table.get(pos_hash)
 
         # I have partially understood the upperbound and lower bound logic
+        # ! the deeper we got the value of the depth var decreases
+        # ! I think shalow evals will have a high depth calue in table as they
         if tt_entry and tt_entry.depth >= depth:
             self.tt_hits +=1
             if tt_entry.node_type == NodeType.EXACT:
@@ -227,8 +419,8 @@ class Engine():
             
             if alpha >= beta:
                 return tt_entry.score, [tt_entry.best_move]
-
-
+        
+        # Heard somethinng called fulfility pruning
 
         # Alpha is the best eval so far for the maximizing player
         if maximizing_player:
@@ -245,7 +437,7 @@ class Engine():
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move.uci()] + line
-                    best_move = move
+                    best_move = move.uci()
 
                 alpha = max(max_eval, alpha) # This will update the best eval so far if possible
 
@@ -278,7 +470,7 @@ class Engine():
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move.uci()] + line
-                    best_move = move
+                    best_move = move.uci()
 
                 beta = min(min_eval, beta) # Minimizing player wants the lowest value
 
@@ -298,15 +490,18 @@ class Engine():
             
             return min_eval, best_line
 
-
-
     def search(self, depth):
         """Do simple search for now"""
+
+        # eval = self.evaluate()
+        # print(eval)
+
 
         # If white to move best score is the worst that can happen so any other move will be evaluated greater than that
         best_score = -float('inf') if self.board.turn == chess.WHITE else float('inf')
         best_move = None
         best_line = []
+        self.nodes_searched = 0
 
         # Loop and evaluate each move
         for move in self.ordered_moves():
@@ -329,11 +524,13 @@ class Engine():
 
         # print("Nodes Searched: ", self.nodes_searched)
 
+
         if abs(best_score) > 900_000:
-            mate_in = (MATE_SCORE - best_score) // 2 if self.board.turn == chess.WHITE else (MATE_SCORE + best_score) // 2
+            mate_in = (MATE_SCORE - abs(best_score)) // 2
+            mate_in = -mate_in if best_score < 0 else mate_in
             print(f"info depth {depth} score mate {mate_in} pv {' '.join(best_line)}")
         else:
-            print(f"info depth {depth} score cp {best_score} pv {' '.join(best_line)}")
+            print(f"info depth {depth} nodes {self.nodes_searched} score cp {best_score} pv {' '.join(best_line)}")
 
         print("tt hits: ", self.tt_hits)
 
