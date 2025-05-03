@@ -80,13 +80,21 @@ pst = {
 
 }
 
-# Create mirrored tables for black pieces
-pst_mirrored = {}
-for piece, table in pst.items():
-    pst_mirrored[piece.lower()] = tuple(reversed(table))
 
-# print(pst_mirrored['p'][45])
-# print( pst['P'][45])
+# There are 4 ccorners on the board
+CORNERS = [0, 7, 63, 56]
+# *There are 4 sides taht correspond to 4 sides
+# Following numbers represent the piece positions on the sides of the board: the top and bottom rank and the left and right sides if the enemy is in this territory then we are in buisness
+FILES = [
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8,                   15,
+        16,                  23,
+        24,                  31,
+        32,                  39,
+        40,                  47,
+        48,                  55,
+        56, 57, 58, 59, 60, 61, 62, 63
+        ]
 
 piece_to_pst = {
     chess.PAWN: 'P',
@@ -168,49 +176,46 @@ class Engine():
             # For black pieces, we can trust the table return negative score as white score is +ive
             return -pst[piece_symbol][square]
 
-    def king_endgame_score(self, white_king_sq, black_king_sq, our_color, op_color):
-        """In the endgame the engine should prefer pusshing the opponent king to the side of the board and bring its King closer so it can checkmate"""
-        score = 0
+    def get_rank_file(self, square):
+        """Convert a square number (0-63) to rank and file coordinates (0-7)"""
+        rank = square // 8  # integer division to get rank (row)
+        file = square % 8   # modulo to get file (column)
+        return rank, file
 
-        # There are 4 ccorners on the board
-        corners = [0, 7, 63, 56]
 
-        black_on_corner = black_king_sq in corners
-        white_on_corner = white_king_sq in corners
-        
-        # *There are 4 sides taht correspond to 4 sides
-        # Following numbers represent the piece positions on the sides of the board: the top and bottom rank and the left and right sides if the enemy is in this territory then we are in buisness
-        files = [
-                0, 1, 2, 3, 4, 5, 6, 7,
-                8,                   15,
-                16,                  23,
-                24,                  31,
-                32,                  39,
-                40,                  47,
-                48,                  55,
-                56, 57, 58, 59, 60, 61, 62, 63
-                ]
+    def king_endgame_score(self, white_king_sq, black_king_sq, our_color):
+        """In endgame, push opponent king to the side and bring own king closer."""
 
-        black_on_side = black_king_sq in files
-        white_on_side = white_king_sq in files
+        def distance_to_center(sq):
+            rank, file = self.get_rank_file(sq)
+            return abs(rank - 3.5) + abs(file - 3.5)
 
+        def distance_to_edge(sq):
+            rank, file = self.get_rank_file(sq)
+            return min(rank, 7 - rank) + min(file, 7 - file)
+
+        def manhattan_distance(sq1, sq2):
+            r1, f1 = self.get_rank_file(sq1)
+            r2, f2 = self.get_rank_file(sq2)
+            return abs(r1 - r2) + abs(f1 - f2)
+
+        # Assume WHITE is maximizing
         if our_color == chess.WHITE:
-            if black_on_corner:
-                score += 30
-            if black_on_side:
-                score += 50
+            friendly_king = white_king_sq
+            enemy_king = black_king_sq
+        else:
+            friendly_king = black_king_sq
+            enemy_king = white_king_sq
 
-        if our_color == chess.BLACK:
-            if white_on_corner:
-                score += 30
-            if white_on_side:
-                score += 50
-        
-        # Todo:- Find the correct wayt o calculate manhatan distance
-        # distance = abs(black_king_sq - white_king_sq)
-        # score += (64-distance) *6
+        # Encourage our king to get closer to enemy king
+        dist_between_kings = manhattan_distance(friendly_king, enemy_king)
+        proximity_bonus = (14 - dist_between_kings) * 10
 
-        return score
+        # Encourage enemy king to move toward edge/corner (higher score if closer to edge)
+        edge_bonus = (7 - distance_to_edge(enemy_king)) * 5
+
+        return proximity_bonus + edge_bonus
+
 
     def evaluate(self, ply=0):
         """Evaluate based on material difference, mate, and draw"""
@@ -266,10 +271,7 @@ class Engine():
         if is_endgame:
             # First calculate as our side is white and op is black and add
             # Calculate as our side is black ans op is white and add -ive of that
-            end_game_score = self.king_endgame_score(white_king_sq, black_king_sq, chess.WHITE, chess.BLACK)
-            - self.king_endgame_score(white_king_sq, black_king_sq, chess.BLACK, chess.WHITE)
-
-            print(self.board, end_game_score)
+            end_game_score = self.king_endgame_score(white_king_sq, black_king_sq, chess.WHITE) - self.king_endgame_score(white_king_sq, black_king_sq, chess.BLACK)
 
             score += end_game_score
 
@@ -305,18 +307,24 @@ class Engine():
     def ordered_moves(self):
         """Orders Moves based on priority"""
 
+        # ! probing is expensive here
         # Search the table 
-        pos_hash = chess.polyglot.zobrist_hash(self.board)
+        # pos_hash = chess.polyglot.zobrist_hash(self.board)
 
-        tt_entry = self.transposition_table.get(pos_hash)
+        # tt_entry = self.transposition_table.get(pos_hash)
         tt_move = None
 
-        if(tt_entry):
-            tt_move = tt_entry.best_move
+        # if(tt_entry):
+        #     tt_move = tt_entry.best_move
 
         moves = list(self.board.legal_moves)
-        moves.sort(key=lambda move: -self.score_move(move, tt_move))
-        return moves
+       
+        scored_moves = [(move, self.score_move(move, tt_move)) for move in moves]
+    
+        # Sort based on calculated scores
+        scored_moves.sort(key=lambda x: -x[1])  # Sort by score in descending order
+    
+        return [move for move, _ in scored_moves]
 
     def store_position(self, hash_key, depth, score, node_type, best_move):
         """Store position in transposition table with simple size management"""
@@ -335,61 +343,6 @@ class Engine():
         self.transposition_table[hash_key] = TTEntry(
             hash_key, depth, score, node_type, best_move
         )
-
-    def quiescence(self, alpha, beta, depth=0, max_depth=10, ply=0):
-        """Quiescence search to evaluate tactical sequences"""
-        self.nodes_searched += 1
-
-        stand_pat  = self.evaluate()
-
-        if stand_pat >= beta:
-            return beta
-        
-         # Update alpha if standing pat is better
-        if stand_pat > alpha:
-            alpha = stand_pat
-        
-        # Stop if we've gone too deep
-        # if depth >= max_depth:
-        #     return alpha
-        
-        # Loop through legal moves captures only
-        for move in self.ordered_moves():
-            if not self.board.is_capture(move):
-                continue
-
-            # Get pieces involved
-            victim = self.board.piece_at(move.to_square)
-            attacker = self.board.piece_at(move.from_square)
-    
-            if not victim or not attacker:
-                continue
-        
-            # Simple material comparison
-            # Could be enhanced with more sophisticated SEE
-            victim_value = abs(self.piece_value(victim))
-            attacker_value = abs(self.piece_value(attacker))
-    
-            # Only search if we're not losing material
-            # or capturing with pawn
-            if victim_value < attacker_value and attacker.piece_type != chess.PAWN:
-                continue
-
-            # Delta Pruning
-            if stand_pat + victim_value + 200 < alpha:
-                continue
-            
-            self.board.push(move)
-            score = -self.quiescence(-beta, -alpha, depth + 1, max_depth, ply+1)
-            self.board.pop()
-        
-            if score >= beta:
-                return beta
-            
-            if score > alpha:
-                alpha = score
-            
-        return alpha
 
     # ! I am trying a lot of things but the engine's speed is not improving there is sure some major bottle neck
     def minmax(self, depth, alpha, beta, maximizing_player, ply=0, allow_null=True):
@@ -425,6 +378,9 @@ class Engine():
         # Alpha is the best eval so far for the maximizing player
         if maximizing_player:
             max_eval = -float('inf')
+            # Futility Pruning check for maximizing player (only near the horizon)
+            if depth == 1 and self.evaluate(ply) < alpha - 150:
+                return alpha, []
             best_line = []
             best_move = None
 
@@ -459,6 +415,9 @@ class Engine():
         # Opposite to that of maximizing player
         else:
             min_eval = float('inf')
+            # Futility Pruning check for minimizing player (only near the horizon)
+            if depth == 1 and self.evaluate(ply) > beta + 150:
+                return beta, []
             best_line = []
             best_move = None
             for move in self.ordered_moves():
