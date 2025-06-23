@@ -141,15 +141,24 @@ class Engine():
         return values[piece.piece_type] if piece.color == chess.WHITE else -values[piece.piece_type]
     
     def is_endgame(self):
-        """Check if we're in an endgame position"""
+        """Improved endgame detection."""
         white_queens = len(self.board.pieces(chess.QUEEN, chess.WHITE))
         black_queens = len(self.board.pieces(chess.QUEEN, chess.BLACK))
-        white_minors = len(self.board.pieces(chess.KNIGHT, chess.WHITE)) + \
-                    len(self.board.pieces(chess.BISHOP, chess.WHITE))
-        black_minors = len(self.board.pieces(chess.KNIGHT, chess.BLACK)) + \
-                    len(self.board.pieces(chess.BISHOP, chess.BLACK))
         
-        return white_queens + black_queens <= 1 and white_minors <= 2 and black_minors <= 2
+        white_material = (
+            len(self.board.pieces(chess.ROOK, chess.WHITE)) * 500 +
+            len(self.board.pieces(chess.KNIGHT, chess.WHITE)) * 320 +
+            len(self.board.pieces(chess.BISHOP, chess.WHITE)) * 330
+        )
+        black_material = (
+            len(self.board.pieces(chess.ROOK, chess.BLACK)) * 500 +
+            len(self.board.pieces(chess.KNIGHT, chess.BLACK)) * 320 +
+            len(self.board.pieces(chess.BISHOP, chess.BLACK)) * 330
+        )
+        
+        # Endgame if no queens and low material, or total material < 2500
+        return ((white_queens + black_queens == 0 and white_material + black_material < 1300) or
+                white_material + black_material < 2500)
 
     def can_apply_null_move(self):
         """Determine if it's safe to apply null move"""
@@ -177,19 +186,11 @@ class Engine():
             return -pst[piece_symbol][square]
 
     def get_rank_file(self, square):
-        """Convert a square number (0-63) to rank and file coordinates (0-7)"""
-        rank = square // 8  # integer division to get rank (row)
-        file = square % 8   # modulo to get file (column)
-        return rank, file
-
+        """Convert square to rank/file."""
+        return square // 8, square % 8
 
     def king_endgame_score(self, white_king_sq, black_king_sq, our_color):
-        """In endgame, push opponent king to the side and bring own king closer."""
-
-        def distance_to_center(sq):
-            rank, file = self.get_rank_file(sq)
-            return abs(rank - 3.5) + abs(file - 3.5)
-
+        """Improved king endgame evaluation."""
         def distance_to_edge(sq):
             rank, file = self.get_rank_file(sq)
             return min(rank, 7 - rank) + min(file, 7 - file)
@@ -199,7 +200,6 @@ class Engine():
             r2, f2 = self.get_rank_file(sq2)
             return abs(r1 - r2) + abs(f1 - f2)
 
-        # Assume WHITE is maximizing
         if our_color == chess.WHITE:
             friendly_king = white_king_sq
             enemy_king = black_king_sq
@@ -207,12 +207,9 @@ class Engine():
             friendly_king = black_king_sq
             enemy_king = white_king_sq
 
-        # Encourage our king to get closer to enemy king
         dist_between_kings = manhattan_distance(friendly_king, enemy_king)
-        proximity_bonus = (14 - dist_between_kings) * 10
-
-        # Encourage enemy king to move toward edge/corner (higher score if closer to edge)
-        edge_bonus = (7 - distance_to_edge(enemy_king)) * 5
+        proximity_bonus = (14 - dist_between_kings) * 15
+        edge_bonus = (7 - distance_to_edge(enemy_king)) * 10
 
         return proximity_bonus + edge_bonus
 
